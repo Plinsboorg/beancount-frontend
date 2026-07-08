@@ -11,6 +11,9 @@ dist/
 .claude/
 .DS_Store
 
+# --- Local operational notes (deployment specifics, private hosts/paths) ---
+CLAUDE.md
+
 # --- Private financial data (local dev copy of the real Plinsburg ledger) ---
 # Kept out of version control on purpose. Has its own separate git repo.
 ledger-plinsburg/
