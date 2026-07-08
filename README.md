@@ -42,8 +42,13 @@ a data-provider swap rather than a rewrite.
 
 ## Repositories
 - **This repo** — the backend service, spec, and analysis docs.
-- **Frontend** — [`Plinsboorg/zerro`](https://github.com/Plinsboorg/zerro), branch `beancount`
+- **Frontend** — [`Plinsboorg/zerro` @ branch `beancount`](https://github.com/Plinsboorg/zerro/tree/beancount)
   (a fork of [`ardov/zerro`](https://github.com/ardov/zerro)).
+
+To reproduce the exact frontend that pairs with this backend, clone that branch:
+```
+git clone -b beancount https://github.com/Plinsboorg/zerro.git
+```
 
 ## Layout
 ```
