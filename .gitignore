@@ -1,0 +1,22 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+
+# --- Node / frontend build artifacts ---
+node_modules/
+dist/
+
+# --- Local tooling / editor ---
+.claude/
+.DS_Store
+
+# --- Private financial data (local dev copy of the real Plinsburg ledger) ---
+# Kept out of version control on purpose. Has its own separate git repo.
+ledger-plinsburg/
+
+# --- Nested repositories (each carries its own independent git history) ---
+# repos/zerro     -> the reworked frontend fork (branch: beancount)
+# repos/beancount -> upstream Beancount 3.2 checkout (reference)
+# repos/fava      -> upstream Fava checkout (reference + reused as a library)
+repos/

@@ -1,0 +1,28 @@
+option "title" "Sample Ledger"
+option "operating_currency" "USD"
+
+2024-01-01 open Assets:Checking USD
+2024-01-01 open Assets:Savings USD
+2024-01-01 open Income:Salary USD
+2024-01-01 open Expenses:Food USD
+2024-01-01 open Expenses:Rent USD
+
+2024-01-05 * "Employer" "Paycheck"
+  Assets:Checking   3000.00 USD
+  Income:Salary
+
+2024-01-06 * "Landlord" "January rent"
+  Expenses:Rent     1200.00 USD
+  Assets:Checking
+
+2024-01-10 * "Grocery" "Weekly groceries"
+  Expenses:Food       85.40 USD
+  Assets:Checking
+
+2024-01-15 * "Transfer to savings"
+  Assets:Savings     500.00 USD
+  Assets:Checking
+
+; a budget custom directive (Fava-style)
+2024-01-01 custom "budget" Expenses:Food "monthly" 400.00 USD
+2024-01-01 custom "budget" Expenses:Rent "monthly" 1200.00 USD
