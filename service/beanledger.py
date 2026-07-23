@@ -55,6 +55,14 @@ def slug_category(cat: str) -> str:
     return ":".join(segs)
 
 
+def slug_tag(name: str) -> str:
+    """Slugify a beancount tag name ('#Trip Berlin' / 'trip berlin' -> 'trip-berlin').
+    Lowercase, PL-transliterated, non-alphanumerics collapsed to hyphens."""
+    s = name.translate(PLMAP).lower().lstrip("#")
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
 def classify_legs(txn: Transaction):
     """Return (fund_legs, cat_legs) with indices into txn.postings."""
     assets = [(i, p) for i, p in enumerate(txn.postings) if p.account.startswith(FUND_ROOTS)]
@@ -464,6 +472,35 @@ class BeanLedger:
                 "updated": n,
                 "category": cat,
                 "errors": new_errors,
+            }
+
+    def set_tags(self, target: str, tags: list[str]) -> dict:
+        """Replace the beancount tag set on a transaction. `target` is a txn id
+        (a split '~legIdx' suffix is ignored — tags live on the whole entry).
+        `tags` are tag names with or without a leading '#'; they are slugified.
+        """
+        tid, _, _leg = target.partition("~")
+        clean = []
+        for t in tags:
+            s = slug_tag(t)
+            if s and s not in clean:
+                clean.append(s)
+
+        with self.lock:
+            self.ledger.changed()
+            errors_before = len(self.ledger.load_errors)
+            txn = self._txn_by_id(tid)
+            if frozenset(clean) == (txn.tags or frozenset()):
+                return {"ok": True, "tags": sorted(clean), "errors": self.errors()}
+            new_entry = txn._replace(tags=frozenset(clean))
+            _slice, sha = get_entry_slice(txn)
+            save_entry_slice(txn, to_string(new_entry, 33, 2), sha)
+            self.ledger.load_file()
+            self.git_snapshot(f"set tags {tid} -> {sorted(clean)}")
+            return {
+                "ok": len(self.errors()) <= errors_before,
+                "tags": sorted(clean),
+                "errors": self.errors(),
             }
 
     def delete_txn(self, target: str) -> dict:
