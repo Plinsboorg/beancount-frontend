@@ -39,6 +39,11 @@ class CategorizeBody(BaseModel):
     force: bool = False
 
 
+class SetTagsBody(BaseModel):
+    target: str
+    tags: list[str]
+
+
 class DeleteBody(BaseModel):
     id: str
 
@@ -74,6 +79,14 @@ def categorize(body: CategorizeBody):
     try:
         return bl.categorize(body.scope, body.target, body.category,
                              body.applyToFuture, body.side, body.force)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/set-tags")
+def set_tags(body: SetTagsBody):
+    try:
+        return bl.set_tags(body.target, body.tags)
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
