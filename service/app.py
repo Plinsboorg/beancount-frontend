@@ -49,6 +49,10 @@ class SetProjectBody(BaseModel):
     project: str | None = None  # empty/None clears
 
 
+class CreateProjectBody(BaseModel):
+    name: str
+
+
 class SplitLeg(BaseModel):
     amount: float  # positive magnitude in the entry's category currency
     category: str  # human path, slugified server-side
@@ -111,6 +115,14 @@ def set_tags(body: SetTagsBody):
 def set_project(body: SetProjectBody):
     try:
         return bl.set_project(body.target, body.project)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/create-project")
+def create_project(body: CreateProjectBody):
+    try:
+        return bl.create_project(body.name)
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 

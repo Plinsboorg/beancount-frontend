@@ -155,6 +155,33 @@ class BeanLedger:
         self.git("add", "-A")
         self.git("commit", "-m", msg, "--author", "zerro-bean <service@local>")
 
+    # ---------------------------------------------------- project registry
+
+    def known_projects(self) -> list[str]:
+        """Projects registered via create_project (projects.json in the ledger
+        dir). Lets a project exist before any leg carries its metadata."""
+        f = self.ledger_dir / "projects.json"
+        if not f.exists():
+            return []
+        try:
+            return [p for p in json.loads(f.read_text()) if isinstance(p, str)]
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def create_project(self, name: str) -> dict:
+        """Register a project name (slugified). Idempotent, git-committed."""
+        proj = slug_tag(name or "")
+        if not proj:
+            raise ValueError("empty project name")
+        with self.lock:
+            projects = self.known_projects()
+            if proj not in projects:
+                projects = sorted([*projects, proj])
+                f = self.ledger_dir / "projects.json"
+                f.write_text(json.dumps(projects, indent=2) + "\n")
+                self.git_snapshot(f"add project {proj}")
+            return {"ok": True, "project": proj, "projects": projects}
+
     # ------------------------------------------------------ zm-diff building
 
     def build_zm_diff(self) -> dict:
@@ -231,6 +258,7 @@ class BeanLedger:
                     if proj:
                         projects.add(proj)
 
+            projects.update(self.known_projects())
             for proj in sorted(projects):
                 tag_ids[f"#{proj}"] = {
                     "id": f"#{proj}", "changed": now, "user": 1,
