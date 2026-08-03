@@ -44,6 +44,22 @@ class SetTagsBody(BaseModel):
     tags: list[str]
 
 
+class SetProjectBody(BaseModel):
+    target: str  # txn id, optionally 'id~legIdx'
+    project: str | None = None  # empty/None clears
+
+
+class SplitLeg(BaseModel):
+    amount: float  # positive magnitude in the entry's category currency
+    category: str  # human path, slugified server-side
+    project: str | None = None
+
+
+class SplitBody(BaseModel):
+    target: str  # txn id ('~legIdx' suffix ignored — splits edit the whole entry)
+    legs: list[SplitLeg]
+
+
 class DeleteBody(BaseModel):
     id: str
 
@@ -87,6 +103,22 @@ def categorize(body: CategorizeBody):
 def set_tags(body: SetTagsBody):
     try:
         return bl.set_tags(body.target, body.tags)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/set-project")
+def set_project(body: SetProjectBody):
+    try:
+        return bl.set_project(body.target, body.project)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/split")
+def split(body: SplitBody):
+    try:
+        return bl.split_txn(body.target, [l.model_dump() for l in body.legs])
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 

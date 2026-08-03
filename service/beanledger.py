@@ -6,6 +6,10 @@ Wraps fava.core.FavaLedger over the Plinsburg beancount ledger and provides:
     2-leg transactions; splits become one pseudo-transaction per category leg).
   - categorize(): durable rewrite of a category posting's account via fava's
     sha256-guarded save_entry_slice, with auto `open` insertion + reload + validation.
+  - set_project(): per-leg `project:` posting metadata (the app's only label
+    concept; beancount #tags are no longer surfaced to the UI).
+  - split_txn(): replace a transaction's category legs with a new set of legs
+    (amount + category + project each) — same total, so the entry still balances.
   - delete_txn(): durable delete of a whole transaction.
 
 Conventions (SPEC §3):
@@ -89,6 +93,16 @@ def cat_entity(account: str):
 def tag_id_for(account: str) -> str:
     root, cat, _entity = cat_entity(account)
     return f"{root}:{cat}" if cat else root
+
+
+def leg_project(txn: Transaction, posting) -> str | None:
+    """Project of a category leg: `project:` posting metadata, falling back to
+    transaction metadata (covers hand-written entries labelling the whole txn).
+    Slugified so ids are stable regardless of how the value was typed."""
+    raw = (posting.meta or {}).get("project") or txn.meta.get("project")
+    if not raw:
+        return None
+    return slug_tag(str(raw)) or None
 
 
 class BeanLedger:
@@ -184,7 +198,7 @@ class BeanLedger:
             fund_curs: dict[str, list] = {}   # account -> [currencies]
             tag_ids: dict[str, dict] = {}
             entities: set[str] = set()
-            bean_tags: set[str] = set()
+            projects: set[str] = set()
 
             def note_cat_account(account: str):
                 root, cat, entity = cat_entity(account)
@@ -206,7 +220,6 @@ class BeanLedger:
                     note_cat_account(acc)
 
             for t in txns:
-                bean_tags.update(t.tags or ())
                 fund, cats = classify_legs(t)
                 for _i, p in fund:
                     fund_curs.setdefault(p.account, [])
@@ -214,11 +227,14 @@ class BeanLedger:
                         fund_curs[p.account].append(p.units.currency)
                 for _i, p in cats:
                     note_cat_account(p.account)
+                    proj = leg_project(t, p)
+                    if proj:
+                        projects.add(proj)
 
-            for bt in sorted(bean_tags):
-                tag_ids[f"#{bt}"] = {
-                    "id": f"#{bt}", "changed": now, "user": 1,
-                    "title": f"#{bt}", "parent": None,
+            for proj in sorted(projects):
+                tag_ids[f"#{proj}"] = {
+                    "id": f"#{proj}", "changed": now, "user": 1,
+                    "title": f"#{proj}", "parent": None,
                     "icon": None, "staticId": None, "picture": None, "color": None,
                     "showIncome": False, "showOutcome": False,
                     "budgetIncome": False, "budgetOutcome": False, "required": False,
@@ -281,7 +297,6 @@ class BeanLedger:
                 date = t.date.isoformat()
                 ms = int(time.mktime(t.date.timetuple()) * 1000)
                 fund, cats = classify_legs(t)
-                extra_tags = [f"#{bt}" for bt in sorted(t.tags or ())]
 
                 base = {
                     "changed": ms, "created": ms, "user": 1, "deleted": False,
@@ -323,7 +338,8 @@ class BeanLedger:
                     n = float(p.units.number)
                     ptid = f"{tid}~{k}" if split else tid
                     root, cat, entity = cat_entity(p.account)
-                    tags = [tag_id_for(p.account)] + extra_tags
+                    proj = leg_project(t, p)
+                    tags = [tag_id_for(p.account)] + ([f"#{proj}"] if proj else [])
                     row = {
                         **base, "id": ptid, "tag": tags,
                         "merchant": entity if entity in entities else None,
@@ -358,24 +374,26 @@ class BeanLedger:
 
     # ------------------------------------------------------------- categorize
 
-    def _rewrite_entries(self, edits: list[tuple[Transaction, list[tuple[int, str]]]]):
-        """Apply account rewrites. edits: [(txn, [(posting_index, new_account)])].
-        Batched bottom-up per file so line numbers stay valid, single reload after.
-        """
-        # ensure `open` directives exist for all new accounts
+    def _ensure_opens(self, accounts: list[str]):
+        """Append `open` directives to history.beancount for unknown accounts."""
         known = {o.account for o in self.ledger.all_entries_by_type.Open}
         needed = []
-        for _t, changes in edits:
-            for _idx, acc in changes:
-                if acc not in known:
-                    known.add(acc)
-                    needed.append(acc)
+        for acc in accounts:
+            if acc not in known:
+                known.add(acc)
+                needed.append(acc)
         if needed:
             hist = self.ledger_dir / "history.beancount"
             with hist.open("a", encoding="utf-8") as f:
                 f.write("\n")
                 for acc in needed:
                     f.write(f"2024-01-01 open {acc}\n")
+
+    def _rewrite_entries(self, edits: list[tuple[Transaction, list[tuple[int, str]]]]):
+        """Apply account rewrites. edits: [(txn, [(posting_index, new_account)])].
+        Batched bottom-up per file so line numbers stay valid, single reload after.
+        """
+        self._ensure_opens([acc for _t, changes in edits for _idx, acc in changes])
 
         def position(t: Transaction):
             return (str(t.meta.get("filename")), int(t.meta.get("lineno", 0)))
@@ -398,11 +416,13 @@ class BeanLedger:
         legs on `side` of every txn with that entity. category = human path,
         slugified here.
 
-        Protection (SPEC §4.4): entity-scope edits skip #vrs-reimbursed txns and
-        legs already in a protected category, unless force=True. Per-txn edits are
-        always explicit, so they are not blocked.
+        Protection (SPEC §4.4): entity-scope edits skip vrs-reimbursed txns
+        (legacy #tag or `project:` metadata) and legs already in a protected
+        category, unless force=True. Per-txn edits are always explicit, so they
+        are not blocked.
         """
         PROTECTED_TAGS = {"vrs-reimbursed"}
+        PROTECTED_PROJECTS = {"vrs-reimbursed"}
         PROTECTED_CATS = {"VRS-Reimbursed"}
         cat = slug_category(category)
         if not cat:
@@ -443,6 +463,9 @@ class BeanLedger:
                         if root != side or entity != target:
                             continue
                         if not force and oldcat.split(":")[0] in PROTECTED_CATS:
+                            skipped += 1
+                            continue
+                        if not force and leg_project(txn, p) in PROTECTED_PROJECTS:
                             skipped += 1
                             continue
                         new_acc = f"{root}:{cat}:{entity}"
@@ -500,6 +523,134 @@ class BeanLedger:
             return {
                 "ok": len(self.errors()) <= errors_before,
                 "tags": sorted(clean),
+                "errors": self.errors(),
+            }
+
+    def set_project(self, target: str, project: str | None) -> dict:
+        """Set or clear the `project:` posting metadata on one category leg.
+        `target` = txn id, optionally 'id~legIdx' for split entries. The name is
+        slugified like tags ('Trip Berlin' -> 'trip-berlin'); empty/None clears.
+        """
+        tid, _, leg = target.partition("~")
+        proj = slug_tag(project or "")
+
+        with self.lock:
+            self.ledger.changed()
+            errors_before = len(self.ledger.load_errors)
+            txn = self._txn_by_id(tid)
+            _fund, cats = classify_legs(txn)
+            k = int(leg) if leg else 0
+            if k >= len(cats):
+                raise ValueError(f"no category leg {k} on {tid}")
+
+            # An entry-level `project:` acts as a fallback for every leg
+            # (leg_project). Materialize it onto the legs before editing so a
+            # per-leg set/clear can't be shadowed by the inherited value.
+            inherited = slug_tag(str(txn.meta.get("project") or ""))
+            postings = list(txn.postings)
+            for i, p in cats:
+                if inherited and not (p.meta or {}).get("project"):
+                    postings[i] = p._replace(
+                        meta={**(p.meta or {}), "project": inherited})
+
+            idx, _p = cats[k]
+            meta = dict(postings[idx].meta or {})
+            if proj:
+                meta["project"] = proj
+            else:
+                meta.pop("project", None)
+            postings[idx] = postings[idx]._replace(meta=meta)
+            entry_meta = {mk: v for mk, v in txn.meta.items() if mk != "project"}
+            new_entry = txn._replace(postings=postings, meta=entry_meta)
+
+            if to_string(new_entry, 33, 2) == to_string(txn, 33, 2):
+                return {"ok": True, "project": proj or None, "errors": self.errors()}
+            _slice, sha = get_entry_slice(txn)
+            save_entry_slice(txn, to_string(new_entry, 33, 2), sha)
+            self.ledger.load_file()
+            self.git_snapshot(f"set project {target} -> {proj or '(none)'}")
+            return {
+                "ok": len(self.errors()) <= errors_before,
+                "project": proj or None,
+                "errors": self.errors(),
+            }
+
+    def split_txn(self, target: str, legs: list[dict]) -> dict:
+        """Replace ALL category legs of a transaction with a new set of legs —
+        the split editor submits the full picture, so this covers splitting,
+        re-splitting, and merging back (a single leg) in one operation.
+
+        `legs`: [{"amount": positive magnitude, "category": human path,
+        "project": optional name}]. Amounts are in the entry's category-leg
+        currency and must sum exactly to the current category total, so the
+        entry keeps balancing; the funding leg(s) are never touched. The
+        entity leaf (payee-derived) is carried over from the current legs.
+        """
+        tid, _, _leg = target.partition("~")
+        if not legs:
+            raise ValueError("no legs")
+
+        with self.lock:
+            self.ledger.changed()
+            errors_before = len(self.ledger.load_errors)
+            txn = self._txn_by_id(tid)
+            _fund, cats = classify_legs(txn)
+            if not cats:
+                raise ValueError(f"{tid} has no category legs")
+            ps = [p for _i, p in cats]
+            if any(p.cost or p.price for p in ps):
+                raise ValueError("cannot split legs carrying cost/price")
+            if len({p.units.currency for p in ps}) > 1:
+                raise ValueError("cannot split: category legs in multiple currencies")
+            roots = {p.account.split(":")[0] for p in ps}
+            if len(roots) > 1:
+                raise ValueError("cannot split: mixed Income/Expenses legs")
+            total = sum(p.units.number for p in ps)
+            if total == 0:
+                raise ValueError("cannot split: category legs sum to zero")
+            sign = 1 if total > 0 else -1
+            root = roots.pop()
+            _r, _c, entity = cat_entity(ps[0].account)
+
+            cent = Decimal("0.01")
+            amounts = [Decimal(str(l.get("amount", 0))).quantize(cent)
+                       for l in legs]
+            if any(a <= 0 for a in amounts):
+                raise ValueError("leg amounts must be positive")
+            if sum(amounts) != abs(total):
+                raise ValueError(
+                    f"leg amounts sum to {sum(amounts)}, expected {abs(total)}")
+
+            template = ps[0]
+            cat_idx = {i for i, _p in cats}
+            new_postings = [p for i, p in enumerate(txn.postings)
+                            if i not in cat_idx]
+            new_accounts = []
+            for l, amt in zip(legs, amounts):
+                cat = slug_category(str(l.get("category") or ""))
+                if not cat:
+                    raise ValueError("every leg needs a category")
+                acc = f"{root}:{cat}:{entity}" if entity else f"{root}:{cat}"
+                proj = slug_tag(str(l.get("project") or ""))
+                new_accounts.append(acc)
+                new_postings.append(template._replace(
+                    account=acc,
+                    units=template.units._replace(number=sign * amt),
+                    meta={"project": proj} if proj else None,
+                ))
+            # legs now carry their projects explicitly — an entry-level
+            # `project:` fallback would override the unlabelled ones
+            entry_meta = {mk: v for mk, v in txn.meta.items() if mk != "project"}
+            new_entry = txn._replace(postings=new_postings, meta=entry_meta)
+
+            self._ensure_opens(new_accounts)
+            _slice, sha = get_entry_slice(txn)
+            save_entry_slice(txn, to_string(new_entry, 33, 2), sha)
+            self.ledger.load_file()
+            self.git_snapshot(f"split {tid} into {len(legs)} legs")
+            return {
+                "ok": len(self.errors()) <= errors_before,
+                "legs": len(legs),
                 "errors": self.errors(),
             }
 
